@@ -190,6 +190,120 @@ def make_music(total, bpm, minor, path, n_trans):
     run(cmd)
 
 
+
+HF = os.environ.get("HF_TOKEN", "")
+T0 = time.time()
+FLUX = "https://black-forest-labs-flux-1-schnell.hf.space/gradio_api"
+LTX = "https://lightricks-ltx-video-distilled.hf.space/gradio_api"
+
+
+def _hh(extra=None):
+    h = {"Authorization": "Bearer " + HF, "User-Agent": "Mozilla/5.0"}
+    if extra:
+        h.update(extra)
+    return h
+
+
+def space_call(base, ep, data, timeout=300):
+    req = urllib.request.Request(base + "/call/" + ep, data=json.dumps({"data": data}).encode(), headers=_hh({"Content-Type": "application/json"}))
+    eid = json.loads(urllib.request.urlopen(req, timeout=60).read())["event_id"]
+    r = urllib.request.urlopen(urllib.request.Request(base + "/call/" + ep + "/" + eid, headers=_hh()), timeout=timeout)
+    txt = r.read().decode("utf-8", "ignore")
+    if "event: complete" not in txt:
+        raise RuntimeError("space error: " + txt[:200])
+    return json.loads(txt.split("event: complete")[1].split("data: ", 1)[1].split("\n")[0])
+
+
+def hf_download(url, path):
+    data = urllib.request.urlopen(urllib.request.Request(url, headers=_hh()), timeout=120).read()
+    Path(path).write_bytes(data)
+    return len(data)
+
+
+def hf_upload(base, path):
+    b = "----vf" + str(random.randint(100000, 999999))
+    body = ("--" + b + "\r\nContent-Disposition: form-data; name=\"files\"; filename=\"in.png\"\r\nContent-Type: image/png\r\n\r\n").encode() + Path(path).read_bytes() + ("\r\n--" + b + "--\r\n").encode()
+    req = urllib.request.Request(base + "/upload", data=body, headers=_hh({"Content-Type": "multipart/form-data; boundary=" + b}))
+    return json.loads(urllib.request.urlopen(req, timeout=120).read())[0]
+
+
+def hf_image(prompt, path):
+    if not HF:
+        return False
+    for attempt in range(3):
+        try:
+            res = space_call(FLUX, "infer", [prompt, random.randint(1, 99999), False, 576, 1024, 4], 180)
+            hf_download(res[0]["url"], path)
+            Image.open(path).convert("RGB").save(path, quality=95)
+            return True
+        except Exception as e:
+            print("flux retry", attempt, str(e)[:150], flush=True)
+            time.sleep(6)
+    return False
+
+
+def ltx_clip(img_path, prompt, out_path):
+    up = hf_upload(LTX, img_path)
+    neg = "worst quality, inconsistent motion, blurry, jittery, distorted, static, frozen, text, watermark"
+    for (h, w) in ((1024, 576), (704, 512)):
+        for attempt in range(2):
+            try:
+                res = space_call(LTX, "image_to_video", [prompt, neg, {"path": up, "meta": {"_type": "gradio.FileData"}}, None, h, w, "image-to-video", 2, 9, random.randint(1, 99999), False, 1, True], 300)
+                n = hf_download(res[0]["video"]["url"], out_path)
+                if n > 20000:
+                    return True
+            except Exception as e:
+                print("ltx retry", h, attempt, str(e)[:150], flush=True)
+                time.sleep(8)
+    return False
+
+
+def last_frame(clip, png):
+    run(["ffmpeg", "-y", "-sseof", "-0.15", "-i", clip, "-frames:v", 1, "-update", 1, png])
+    return png
+
+
+def make_clips(scenes, spec):
+    sets = {}
+    style = str(spec.get("style", ""))
+    cur = WORK / "start0.png"
+    if not hf_image(style + ", " + scenes[0]["image_prompt"], cur):
+        return sets
+    sets["first"] = cur
+    for i, s in enumerate(scenes):
+        if time.time() - T0 > 15 * 60:
+            print("clip time budget used up", flush=True)
+            break
+        paths = []
+        prompt = (s["image_prompt"] + ", the tiny workers move and work energetically, walking, carrying materials, using tiny tools, natural lively motion, camera slowly pushes in, same set and same workers, consistent look")[:700]
+        for part in range(2):
+            out = WORK / ("clip%d_%d.mp4" % (i, part))
+            if not ltx_clip(str(cur), prompt, str(out)):
+                break
+            paths.append(str(out))
+            cur = Path(last_frame(str(out), str(WORK / ("lf%d_%d.png" % (i, part)))))
+        if paths:
+            sets[i] = paths
+        else:
+            break
+    return sets
+
+
+def make_scene_clip(i, paths):
+    out = WORK / ("scene" + str(i) + ".mp4")
+    cmd = ["ffmpeg", "-y"]
+    for p in paths:
+        cmd += ["-i", p]
+    parts = []
+    for k in range(len(paths)):
+        parts.append("[%d:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1[v%d]" % (k, k))
+    cat = "".join("[v%d]" % k for k in range(len(paths))) + "concat=n=%d:v=1:a=0[c]" % len(paths)
+    fc = ";".join(parts + [cat, "[c]tpad=stop_mode=clone:stop_duration=2,trim=duration=%.2f,setpts=PTS-STARTPTS,format=yuv420p[o]" % D])
+    cmd += ["-filter_complex", fc, "-map", "[o]", "-r", FPS, "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", out]
+    run(cmd)
+    return out
+
+
 def main():
     scenes = spec["scenes"]
     n = len(scenes)
@@ -199,9 +313,28 @@ def main():
     total = n * D - (n - 1) * X
 
     scene_files, first_img = [], None
+    clipsets = {}
+    try:
+        clipsets = make_clips(scenes, spec) if HF else {}
+    except Exception as e:
+        print("clip generation failed", str(e)[:200], flush=True)
+        clipsets = {}
+    if clipsets.get("first"):
+        first_img = clipsets["first"]
     for i, s in enumerate(scenes):
+        cs = clipsets.get(i)
+        if cs:
+            scene_files.append(make_scene_clip(i, cs))
+            continue
         img = WORK / ("s%d.jpg" % i)
-        if not fetch_image(s["image_prompt"] + ", " + str(spec.get("style", "")), img, spec.get("seed") or random.randint(1, 99999)):
+        base_img = None
+        if i > 0 and clipsets.get(i - 1):
+            base_img = WORK / ("lf%d_1.png" % (i - 1))
+            if not base_img.exists():
+                base_img = None
+        if base_img is not None:
+            img = base_img
+        elif not (hf_image(str(spec.get("style", "")) + ", " + s["image_prompt"], img) or fetch_image(s["image_prompt"] + ", " + str(spec.get("style", "")), img, spec.get("seed") or random.randint(1, 99999))):
             fallback_image(img, i, accent)
         if first_img is None:
             first_img = img
@@ -234,7 +367,7 @@ def main():
     thumb_src = first_img
     if spec.get("thumb_prompt"):
         tb = WORK / "thumbbg.jpg"
-        if fetch_image(spec["thumb_prompt"] + ", " + str(spec.get("style", "")) + ", youtube thumbnail, bold, high contrast", tb, (spec.get("seed") or 7) + 11):
+        if hf_image(spec["thumb_prompt"] + ", " + str(spec.get("style", "")) + ", youtube thumbnail, bold, high contrast", tb) or fetch_image(spec["thumb_prompt"] + ", " + str(spec.get("style", "")) + ", youtube thumbnail", tb, (spec.get("seed") or 7) + 11):
             thumb_src = tb
     hl = [l.upper() for l in wrap(esc(spec.get("thumb_text") or spec.get("hook") or scenes[0]["headline"]), 12)]
     w = hl[-1].split(" "); w[-1] = "{\\1c%s}%s" % (ass_color(accent), w[-1]); hl[-1] = " ".join(w)
