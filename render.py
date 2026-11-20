@@ -201,7 +201,7 @@ def main():
     scene_files, first_img = [], None
     for i, s in enumerate(scenes):
         img = WORK / ("s%d.jpg" % i)
-        if not fetch_image(s["image_prompt"], img, random.randint(1, 99999)):
+        if not fetch_image(s["image_prompt"] + ", " + str(spec.get("style", "")), img, spec.get("seed") or random.randint(1, 99999)):
             fallback_image(img, i, accent)
         if first_img is None:
             first_img = img
@@ -231,7 +231,12 @@ def main():
     run(cmd)
 
     th = Path("work/thumb.ass")
-    hl = [l.upper() for l in wrap(esc(spec.get("hook") or scenes[0]["headline"]), 12)]
+    thumb_src = first_img
+    if spec.get("thumb_prompt"):
+        tb = WORK / "thumbbg.jpg"
+        if fetch_image(spec["thumb_prompt"] + ", " + str(spec.get("style", "")) + ", youtube thumbnail, bold, high contrast", tb, (spec.get("seed") or 7) + 11):
+            thumb_src = tb
+    hl = [l.upper() for l in wrap(esc(spec.get("thumb_text") or spec.get("hook") or scenes[0]["headline"]), 12)]
     w = hl[-1].split(" "); w[-1] = "{\\1c%s}%s" % (ass_color(accent), w[-1]); hl[-1] = " ".join(w)
     body = build_ass([], 5, accent, tag).split("[Events]")[0].replace("Style: Head,%s,92" % FONT, "Style: Head,%s,150" % FONT)
     body += "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -239,7 +244,7 @@ def main():
     th.write_text(body, encoding="utf-8")
     vf = ("scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,eq=contrast=1.12:saturation=1.25,"
           "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.35:t=fill,subtitles=work/thumb.ass:fontsdir=/usr/share/fonts")
-    run(["ffmpeg", "-y", "-i", first_img, "-vf", vf, "-frames:v", 1, "-q:v", 3, OUT / "thumb.jpg"])
+    run(["ffmpeg", "-y", "-i", thumb_src, "-vf", vf, "-frames:v", 1, "-q:v", 3, OUT / "thumb.jpg"])
     (OUT / "meta.json").write_text(json.dumps({"title": spec.get("title"), "duration": total, "grade": grade}, ensure_ascii=False))
     print("DONE", total, flush=True)
 
