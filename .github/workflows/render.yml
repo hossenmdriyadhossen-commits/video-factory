@@ -13,7 +13,7 @@ permissions:
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,12 +22,13 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg fonts-noto-core fontconfig
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-dejavu-core fontconfig
           fc-cache -f
-          pip install edge-tts pillow
+          pip install pillow
       - name: Render video
         env:
           SPEC: ${{ inputs.spec }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python render.py
       - name: Publish release
         env:
