@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 
 W, H, FPS = 1080, 1920, 30
-D = 4.2
+D = 3.4
 X = 0.5
 spec = json.loads(os.environ["SPEC"])
 OUT = Path("out"); OUT.mkdir(exist_ok=True)
@@ -270,6 +270,7 @@ def make_clips(scenes, spec):
     if not hf_image(style + ", " + scenes[0]["image_prompt"], cur, spec.get("seed")):
         return sets
     sets["first"] = cur
+    fails = 0
     for i, s in enumerate(scenes):
         if time.time() - T0 > 15 * 60:
             print("clip time budget used up", flush=True)
@@ -280,7 +281,7 @@ def make_clips(scenes, spec):
             if hf_image(style + ", " + s["image_prompt"], stg, spec.get("seed")):
                 cur = stg
         prompt = (s["image_prompt"] + ", the tiny workers move and work energetically, walking, carrying materials, hammering and spreading with tiny tools, clearly visible lively motion, camera slowly pushes in, same set and same workers, consistent look")[:700]
-        for part in range(2):
+        for part in range(1):
             out = WORK / ("clip%d_%d.mp4" % (i, part))
             if not ltx_clip(str(cur), prompt, str(out)):
                 break
@@ -289,7 +290,9 @@ def make_clips(scenes, spec):
         if paths:
             sets[i] = paths
         else:
-            break
+            fails += 1
+            if fails >= 2:
+                break
     return sets
 
 
@@ -302,7 +305,7 @@ def make_scene_clip(i, paths):
     for k in range(len(paths)):
         parts.append("[%d:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1[v%d]" % (k, k))
     cat = "".join("[v%d]" % k for k in range(len(paths))) + "concat=n=%d:v=1:a=0[c]" % len(paths)
-    fc = ";".join(parts + [cat, "[c]tpad=stop_mode=clone:stop_duration=2,trim=duration=%.2f,setpts=PTS-STARTPTS,format=yuv420p[o]" % D])
+    fc = ";".join(parts + [cat, "[c]setpts=1.6*PTS,tpad=stop_mode=clone:stop_duration=2,trim=duration=%.2f,setpts=PTS-STARTPTS,format=yuv420p[o]" % D])
     cmd += ["-filter_complex", fc, "-map", "[o]", "-r", FPS, "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", out]
     run(cmd)
     return out
@@ -333,7 +336,7 @@ def main():
         img = WORK / ("s%d.jpg" % i)
         base_img = None
         if i > 0 and clipsets.get(i - 1):
-            base_img = WORK / ("lf%d_1.png" % (i - 1))
+            base_img = WORK / ("lf%d_0.png" % (i - 1))
             if not base_img.exists():
                 base_img = None
         if base_img is not None:
@@ -375,12 +378,12 @@ def main():
             thumb_src = tb
     hl = [l.upper() for l in wrap(esc(spec.get("thumb_text") or spec.get("hook") or scenes[0]["headline"]), 12)]
     w = hl[-1].split(" "); w[-1] = "{\\1c%s}%s" % (ass_color(accent), w[-1]); hl[-1] = " ".join(w)
-    body = build_ass([], 5, accent, tag).split("[Events]")[0].replace("Style: Head,%s,92" % FONT, "Style: Head,%s,150" % FONT)
+    body = build_ass([], 5, accent, tag).split("[Events]")[0].replace("Style: Head,%s,92" % FONT, "Style: Head,%s,185" % FONT)
     body += "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-    body += "Dialogue: 3,0:00:00.00,0:00:05.00,Head,,0,0,0,,{\\an5\\pos(540,1000)}%s\n" % "\\N".join(hl)
+    body += "Dialogue: 3,0:00:00.00,0:00:05.00,Head,,0,0,0,,{\\an5\\pos(540,1400)}%s\n" % "\\N".join(hl)
     th.write_text(body, encoding="utf-8")
-    vf = ("scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,eq=contrast=1.12:saturation=1.25,"
-          "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.35:t=fill,subtitles=work/thumb.ass:fontsdir=/usr/share/fonts")
+    vf = ("scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,eq=contrast=1.2:saturation=1.6:brightness=0.06,"
+          "drawbox=x=0:y=0:w=iw:h=ih:color=0x" + accent + "@1:t=22,subtitles=work/thumb.ass:fontsdir=/usr/share/fonts")
     run(["ffmpeg", "-y", "-i", thumb_src, "-vf", vf, "-frames:v", 1, "-q:v", 3, OUT / "thumb.jpg"])
     (OUT / "meta.json").write_text(json.dumps({"title": spec.get("title"), "duration": total, "grade": grade}, ensure_ascii=False))
     print("DONE", total, flush=True)
