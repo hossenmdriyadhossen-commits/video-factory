@@ -150,7 +150,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         words[-1] = "{\\1c%s}%s{\\1c&HFFFFFF&}" % (ac, words[-1])
         lines[-1] = " ".join(words)
         htxt = "\\N".join(lines)
-        y0 = 940
+        y0 = 1290
         ev.append("Dialogue: 2,%s,%s,Shape,,0,0,0,,{\\an7\\pos(455,%d)\\p1\\1c%s\\fscx1\\t(0,400,\\fscx100)}m 0 0 l 170 0 170 12 0 12" % (ts(st), ts(en), y0 - 30, ac))
         ev.append("Dialogue: 3,%s,%s,Head,,0,0,0,,{\\an8\\move(540,%d,540,%d,0,320)\\fscx88\\fscy88\\alpha&HFF&\\t(0,320,\\fscx100\\fscy100\\alpha&H00&)}%s" % (ts(st), ts(en), y0 + 40, y0, htxt))
         sub = esc(s.get("sub", "")).strip()
@@ -227,12 +227,12 @@ def hf_upload(base, path):
     return json.loads(urllib.request.urlopen(req, timeout=120).read())[0]
 
 
-def hf_image(prompt, path):
+def hf_image(prompt, path, seed=None):
     if not HF:
         return False
     for attempt in range(3):
         try:
-            res = space_call(FLUX, "infer", [prompt, random.randint(1, 99999), False, 576, 1024, 4], 180)
+            res = space_call(FLUX, "infer", [prompt, seed or random.randint(1, 99999), False, 576, 1024, 4], 180)
             hf_download(res[0]["url"], path)
             Image.open(path).convert("RGB").save(path, quality=95)
             return True
@@ -267,7 +267,7 @@ def make_clips(scenes, spec):
     sets = {}
     style = str(spec.get("style", ""))
     cur = WORK / "start0.png"
-    if not hf_image(style + ", " + scenes[0]["image_prompt"], cur):
+    if not hf_image(style + ", " + scenes[0]["image_prompt"], cur, spec.get("seed")):
         return sets
     sets["first"] = cur
     for i, s in enumerate(scenes):
@@ -275,7 +275,11 @@ def make_clips(scenes, spec):
             print("clip time budget used up", flush=True)
             break
         paths = []
-        prompt = (s["image_prompt"] + ", the tiny workers move and work energetically, walking, carrying materials, using tiny tools, natural lively motion, camera slowly pushes in, same set and same workers, consistent look")[:700]
+        if i > 0:
+            stg = WORK / ("stage%d.png" % i)
+            if hf_image(style + ", " + s["image_prompt"], stg, spec.get("seed")):
+                cur = stg
+        prompt = (s["image_prompt"] + ", the tiny workers move and work energetically, walking, carrying materials, hammering and spreading with tiny tools, clearly visible lively motion, camera slowly pushes in, same set and same workers, consistent look")[:700]
         for part in range(2):
             out = WORK / ("clip%d_%d.mp4" % (i, part))
             if not ltx_clip(str(cur), prompt, str(out)):
